@@ -3,12 +3,6 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { performance } = require('perf_hooks');
 
-const args = new Set(process.argv.slice(2));
-const preview = args.has('--preview');
-const restore = args.has('--restore');
-const installPath = 'D:/cursor';
-const workbenchPath = path.join(installPath, 'resources/app/out/vs/workbench');
-const cursorExe = path.join(installPath, 'Cursor.exe');
 const resourcePath = path.join(__dirname, '汉化资源.json');
 const backupSuffix = '.cursor-zh.bak';
 const rangeRadius = 150_000;
@@ -30,6 +24,39 @@ const rangeAnchors = [
   'Included in ${',
 ];
 
+const parseCliArgs = (args) => {
+  const installPaths = [];
+  let preview = false;
+  let restore = false;
+
+  for (const arg of args) {
+    if (arg === '--preview') {
+      preview = true;
+    } else if (arg === '--restore') {
+      restore = true;
+    } else if (arg.startsWith('--')) {
+      throw new Error(`不支持的参数：${arg}`);
+    } else {
+      installPaths.push(arg);
+    }
+  }
+
+  if (preview && restore) {
+    throw new Error('--preview 和 --restore 不能同时使用。');
+  }
+  if (installPaths.length !== 1 || !installPaths[0].trim()) {
+    throw new Error(
+      '请提供一个 Cursor 安装目录，例如：一键汉化Cursor.cmd "C:\\Program Files\\Cursor"',
+    );
+  }
+
+  return {
+    installPath: path.resolve(installPaths[0].trim()),
+    preview,
+    restore,
+  };
+};
+
 const sleep = (milliseconds) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -37,7 +64,7 @@ const stopCursor = () => {
   spawnSync('taskkill.exe', ['/IM', 'Cursor.exe', '/F'], { stdio: 'ignore' });
 };
 
-const startCursor = () => {
+const startCursor = (cursorExe) => {
   const child = spawn(cursorExe, [], {
     detached: true,
     stdio: 'ignore',
@@ -46,7 +73,7 @@ const startCursor = () => {
   child.unref();
 };
 
-const listTargets = () =>
+const listTargets = (workbenchPath) =>
   fs
     .readdirSync(workbenchPath, { withFileTypes: true })
     .filter(
@@ -172,17 +199,22 @@ const translateSource = (source, matcher) => {
   return { output: chunks.join(''), count };
 };
 
-const restoreBackups = async (targets) => {
+const restoreBackups = async (targets, cursorExe) => {
   stopCursor();
   await sleep(300);
   for (const target of targets) {
     const backup = `${target}${backupSuffix}`;
     if (fs.existsSync(backup)) fs.copyFileSync(backup, target);
   }
-  startCursor();
+  startCursor(cursorExe);
 };
 
-const applyTranslations = async (targets, translations) => {
+const applyTranslations = async (
+  targets,
+  translations,
+  cursorExe,
+  preview,
+) => {
   const matcher = createTokenMatcher(translations);
   const changes = [];
 
@@ -219,28 +251,35 @@ const applyTranslations = async (targets, translations) => {
     }
     fs.writeFileSync(change.target, change.output, 'utf8');
   }
-  startCursor();
+  startCursor(cursorExe);
 };
 
-const main = async () => {
+const main = async (args = process.argv.slice(2)) => {
   const startedAt = performance.now();
+  const { installPath, preview, restore } = parseCliArgs(args);
+  const cursorExe = path.join(installPath, 'Cursor.exe');
+  const workbenchPath = path.join(
+    installPath,
+    'resources/app/out/vs/workbench',
+  );
+
   if (!fs.existsSync(resourcePath)) {
     throw new Error(`找不到汉化资源：${resourcePath}`);
   }
-  if (!fs.existsSync(workbenchPath)) {
-    throw new Error(`找不到 Cursor workbench 目录：${workbenchPath}`);
+  if (!fs.existsSync(cursorExe) || !fs.existsSync(workbenchPath)) {
+    throw new Error(`不是有效的 Cursor 安装目录：${installPath}`);
   }
 
-  const targets = listTargets();
+  const targets = listTargets(workbenchPath);
   if (targets.length === 0) {
     throw new Error(`在 ${workbenchPath} 中找不到 Cursor workbench 文件。`);
   }
 
   if (restore) {
-    await restoreBackups(targets);
+    await restoreBackups(targets, cursorExe);
   } else {
     const translations = JSON.parse(fs.readFileSync(resourcePath, 'utf8'));
-    await applyTranslations(targets, translations);
+    await applyTranslations(targets, translations, cursorExe, preview);
   }
 
   console.log(`耗时：${Math.round(performance.now() - startedAt)} ms`);
@@ -253,4 +292,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createTokenMatcher, translateSource };
+module.exports = { createTokenMatcher, parseCliArgs, translateSource };
